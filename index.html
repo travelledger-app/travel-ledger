@@ -415,6 +415,15 @@
     <div id="remindStatus" class="hint" style="margin-top:8px;"></div>
   </div>
 
+  <div class="step" data-tab="more" id="aiReaderStep">
+    <h2>AI reader</h2>
+    <p class="hint">Reads statements, e-tickets, bills and photos far more accurately than the reader on this device. Before anything is sent, this device removes names, membership, ticket and booking numbers, card numbers, emails and phone numbers; only the travel details (dates, times, places, hotels, amounts) go to Claude, through your private middleman, and nothing is kept. Each document costs about a cent. Barcodes on boarding passes are still read on this device.</p>
+    <label style="display:flex; align-items:center; gap:10px; margin:10px 0;"><input type="checkbox" id="aiReaderOn" style="width:auto;"> <b>Read documents with the AI reader</b></label>
+    <label for="aiNames">Names to remove as well (his and yours, as they appear on tickets, separated by commas)</label>
+    <input type="text" id="aiNames" placeholder="e.g. first name, surname" autocomplete="off">
+    <div id="aiReaderStatus" class="hint" style="margin-top:8px;"></div>
+  </div>
+
   <div class="step" data-tab="more">
     <h2>Backups</h2>
     <div class="backup-row">
@@ -4382,7 +4391,19 @@ function renderNeedsPassList() {
   });
 }
 
-function renderAll() { renderBoard(); renderTable(); renderCalendar(); renderLegTable(); populateExpTripSelect(); renderExpenseTable(); renderDuplicateWarnings(); renderNeedsPassList(); renderTripBillMismatchWarnings(); }
+function syncAiReaderUI() {
+  const on = document.getElementById('aiReaderOn'), names = document.getElementById('aiNames');
+  if (!on || !profile) return;
+  on.checked = !!profile.aiReader;
+  if (document.activeElement !== names) names.value = profile.aiNames || '';
+  if (!on.dataset.wired) {
+    on.dataset.wired = '1';
+    const st = document.getElementById('aiReaderStatus');
+    on.onchange = async () => { profile.aiReader = on.checked; await saveProfile(); st.textContent = on.checked ? '✓ On: documents will be read by the AI reader, with personal details removed first.' : 'Off: documents are read on this device only.'; };
+    names.onchange = async () => { profile.aiNames = names.value.trim(); await saveProfile(); st.textContent = '✓ Saved: these names will be removed too.'; };
+  }
+}
+function renderAll() { syncAiReaderUI(); renderBoard(); renderTable(); renderCalendar(); renderLegTable(); populateExpTripSelect(); renderExpenseTable(); renderDuplicateWarnings(); renderNeedsPassList(); renderTripBillMismatchWarnings(); }
 
 // ================= events: trips =================
 async function backfillTripsFromHotelBills() {
@@ -5037,7 +5058,7 @@ async function cleanupLegacyUndoFields() {
 // A tab left open keeps running the old version after an update is uploaded, so new bills can
 // miss newer features (e.g. a type that didn't exist yet). Every few minutes, and whenever the
 // tab comes back into view, compare this page's version with the one that's live.
-const APP_VERSION = '2026-11-11e';
+const APP_VERSION = '2026-11-26a';
 async function checkForNewerVersion() {
   try {
     const res = await fetch(location.href.split('#')[0], { cache: 'no-store' });
@@ -6018,6 +6039,102 @@ function partialFlightFromText(lines) {
   return it;
 }
 
+// ---- the AI reader: details removed on this device, then read by Claude through the private middleman ----
+const AI_READER_URL = 'https://travel-ledger-reader.riddhiai06.workers.dev';
+const aiReaderOn = () => !!(profile && profile.aiReader);
+// Everything that identifies him is taken out here, before anything leaves the device.
+function redactForAI(text, extraNames) {
+  const R = '[removed]';
+  let t = String(text || '');
+  t = t.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, R);                                              // emails
+  t = t.replace(/\+\d[\d\s().-]{7,}\d/g, R);                                                    // phone numbers (+971 50 …)
+  t = t.replace(/\(\d{3}\)\s?\d{3}-\d{4}|\b\d{3}-\d{3}-\d{4}\b/g, R);                              // phone numbers (212-398-1900)
+  t = t.replace(/(\*{2,}|[xX•]{2,})[\s-]?\d{4}\b/g, R);                                          // card endings (**** 1234)
+  t = t.replace(/\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,4}\b/g, R);                                   // card numbers
+  t = t.replace(/\b\d{9,}\b/g, R);                                                              // membership / ticket / account numbers
+  t = t.replace(/\b\d{3,4}(?:[ -]\d{3,4}){2,}\b/g, R);                                            // the same, written in groups (000 000 000)
+  // SURNAME/FIRSTNAME MR, as airlines print names
+  t = t.replace(/\b[A-Z][A-Za-z'-]{1,}\/[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+)?(?:\s+(?:MR|MRS|MS|MISS|MSTR|DR|SIR))?\b/g, R);
+  // titles followed by a name: Mr John Sample
+  t = t.replace(/\b(Mr|Mrs|Ms|Miss|Mstr|Dr|Sir|Madam)\.?\s+[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}/g, R);
+  // labelled details: the label stays (so the reader knows what it was), the value goes
+  t = t.replace(/\b(passenger(?:\s+name)?|guest(?:\s+name)?|traveller|traveler|customer|name|member(?:ship)?(?:\s+(?:no\.?|number|#|id))?|account(?:\s+(?:no\.?|number))?|booking\s+(?:ref(?:erence)?|code|number|no\.?)|confirmation(?:\s+(?:no\.?|number|code|#))?|reservation(?:\s+(?:no\.?|number|code))?|pnr|record\s+locator|e-?ticket(?:\s+(?:no\.?|number))?|ticket\s+(?:no\.?|number)|folio(?:\s+(?:no\.?|number))?|invoice\s+(?:no\.?|number)|frequent\s+flyer(?:\s+(?:no\.?|number))?|skywards(?:\s+(?:no\.?|number))?|honors\s+(?:no\.?|number)|bonvoy\s+(?:no\.?|number)|passport(?:\s+(?:no\.?|number))?|card(?:\s+(?:no\.?|number))?)(\s*[:#.]\s*|\s+)([^\n]{1,40}?)(?=\s{2,}|\n|$)/gi,
+    (m, label, sep, val) => {
+      // a name after "Passenger" / "Guest" goes even without a colon; a number-type label needs a colon or a digit, so "E-ticket itinerary" stays
+      const nameLabel = /^(passenger|guest|traveller|traveler|customer|name)/i.test(label);
+      return /[:#]/.test(sep) || /\d/.test(val) || (nameLabel && /[A-Za-z]{2}/.test(val)) ? label + sep + R : m;
+    });
+  // the names you've listed
+  String(extraNames || '').split(/[,;]+/).map(n => n.trim()).filter(n => n.length >= 2).forEach(n =>
+    n.split(/\s+/).filter(w => w.length >= 3).forEach(w => { t = t.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi'), R); }));
+  return t;
+}
+const AI_COUNTRY_ALIASES = { 'uk': 'United Kingdom', 'u.k.': 'United Kingdom', 'great britain': 'United Kingdom', 'britain': 'United Kingdom', 'england': 'United Kingdom', 'scotland': 'United Kingdom', 'wales': 'United Kingdom', 'northern ireland': 'United Kingdom',
+  'usa': 'United States', 'us': 'United States', 'u.s.': 'United States', 'u.s.a.': 'United States', 'united states of america': 'United States', 'america': 'United States',
+  'uae': 'United Arab Emirates', 'u.a.e.': 'United Arab Emirates', 'emirates': 'United Arab Emirates', 'holland': 'Netherlands', 'the netherlands': 'Netherlands', 'italia': 'Italy', 'czechia': 'Czech Republic', 'türkiye': 'Turkey', 'turkiye': 'Turkey' };
+function aiCountry(name, code) {
+  const n = String(name || '').trim();
+  if (n) {
+    const hit = WORLD_COUNTRIES.find(c => c.toLowerCase() === n.toLowerCase()) || AI_COUNTRY_ALIASES[n.toLowerCase()];
+    if (hit && WORLD_COUNTRIES.includes(hit)) return hit;
+    const part = WORLD_COUNTRIES.find(c => n.toLowerCase().includes(c.toLowerCase()));
+    if (part) return part;
+  }
+  const a = code && AIRPORTS[String(code).toUpperCase()];
+  return a && WORLD_COUNTRIES.includes(a[1]) ? a[1] : '';
+}
+const aiDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d)) ? d : '';
+const aiTime = t => /^([01]\d|2[0-3]):[0-5]\d$/.test(t || '') ? t : '';
+const AI_BILL_TYPE = { flight: 'Airline', airline: 'Airline', hotel: 'Hotel', restaurant: 'Restaurant', taxi: 'Taxi', train: 'Train', shopping: 'Shopping', groceries: 'Groceries', medical: 'Medical', laundry: 'Laundry', entertainment: 'Entertainment', fuel: 'Fuel', 'cash withdrawal': 'Cash withdrawal' };
+// the middleman's answer, turned into the same kind of items the reader on this device makes
+function aiItemsToImport(list, sent) {
+  const raw = 'read by the AI reader from: ' + sent.replace(/\s+/g, ' ').slice(0, 200);
+  const out = [];
+  (list || []).forEach(x => {
+    if (!x || typeof x !== 'object') return;
+    if (x.kind === 'flight') {
+      const depDate = aiDate(x.depDate); if (!depDate) return;
+      const fromCode = String(x.fromCode || '').toUpperCase().slice(0, 3), toCode = String(x.toCode || '').toUpperCase().slice(0, 3);
+      const from = aiCountry(x.from, fromCode), to = aiCountry(x.to, toCode);
+      let arrDate = aiDate(x.arrDate) || depDate; if (arrDate < depDate) arrDate = depDate;
+      out.push({ kind: 'flight', mode: x.mode === 'train' ? 'train' : undefined, depDate, arrDate, depTime: aiTime(x.depTime), arrTime: aiTime(x.arrTime), from, to,
+        depCity: String(x.depCity || (AIRPORTS[fromCode] || [])[0] || '').slice(0, 60), arrCity: String(x.arrCity || (AIRPORTS[toCode] || [])[0] || '').slice(0, 60),
+        fromCode: AIRPORTS[fromCode] ? fromCode : '', toCode: AIRPORTS[toCode] ? toCode : '', flightNo: String(x.flightNo || '').slice(0, 20), yearGuessed: !!x.yearGuessed,
+        partial: !from || !to, viaAI: true, raw });
+    } else if (x.kind === 'hotel') {
+      const checkIn = aiDate(x.checkIn), checkOut = aiDate(x.checkOut) || checkIn; if (!checkIn) return;
+      out.push({ kind: 'hotel', hotel: String(x.hotel || 'Hotel').slice(0, 80), city: String(x.city || '').slice(0, 60), country: aiCountry(x.country), checkIn, checkOut: checkOut < checkIn ? checkIn : checkOut,
+        amount: null, currency: '', yearGuessed: !!x.yearGuessed, viaAI: true, raw });
+    } else if (x.kind === 'bill') {
+      const date = aiDate(x.date); if (!date) return;
+      const amount = typeof x.amount === 'number' && isFinite(x.amount) ? Math.round(x.amount * 100) / 100 : null;
+      out.push({ kind: 'bill', date, amount, currency: /^[A-Z]{3}$/.test(x.currency || '') ? x.currency : '', vendor: String(x.vendor || '').slice(0, 80),
+        category: AI_BILL_TYPE[String(x.category || '').toLowerCase()] || 'Other', place: aiCountry(x.country), viaAI: true, raw });
+    }
+  });
+  return out;
+}
+// one document: cleaned, sent in parts of a sensible size (long statements), answers put together
+async function aiReadLines(lines) {
+  const user = window.__fb && window.__fb.auth && window.__fb.auth.currentUser;
+  if (!user) throw new Error('not signed in');
+  const token = await user.getIdToken();
+  const clean = lines.map(l => redactForAI(l, profile.aiNames));
+  const parts = []; let cur = [];
+  clean.forEach(l => { if (cur.join('\n').length + l.length > 12000 && cur.length) { parts.push(cur); cur = []; } cur.push(l); });
+  if (cur.length) parts.push(cur);
+  const items = [];
+  for (const part of parts) {
+    const sent = part.join('\n');
+    const r = await fetch(AI_READER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ text: sent, today: fmt(Date.now()) }) });
+    let data = {}; try { data = await r.json(); } catch (e) { /* below */ }
+    if (!r.ok) throw new Error(data.error || ('the AI reader answered ' + r.status));
+    aiItemsToImport(data.items, sent).forEach(it => { if (!items.some(o => importKey(o) === importKey(it))) items.push(it); });
+  }
+  return items;
+}
+
 // ---- the review table ----
 let importItems = [];   // everything found in the PDFs so far, waiting for approval
 const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
@@ -6303,7 +6420,7 @@ async function readPdfFiles(files) {
       return bill ? [bill] : [];
     } finally { US_DATES = false; }
   };
-  const unread = [], fresh = [];
+  const unread = [], fresh = [], aiUsedOn = [], aiFailed = [];
   for (const f of files) {
     status.textContent = 'Reading ' + f.name + '…';
     const kind = importFileKind(f);
@@ -6362,6 +6479,14 @@ async function readPdfFiles(files) {
       unread.push({ name: f.name, picture: kind === 'image' || viaOcr,
         error: heic ? 'this browser can’t open iPhone HEIC photos — on the phone, choose the photo from the ledger itself, or save it as JPEG' : (e && e.message || 'could not be opened') });
       continue;
+    }
+    // the AI reader, when it's on: it reads the same text (cleaned first); a barcode read on the device is kept as it is
+    if (aiReaderOn() && lines.length && !items.some(it => it.viaBarcode)) {
+      try {
+        status.textContent = 'Reading ' + f.name + ' with the AI reader (personal details removed first)…';
+        const ai = await aiReadLines(lines.upright && lines.upright.length ? lines.upright : lines);
+        if (ai.length) { items = ai; aiUsedOn.push(f.name); }
+      } catch (e) { aiFailed.push(f.name + ' (' + (e.message || 'failed') + ')'); }
     }
     if (!items.length && viaOcr && looksLikeBoardingPass((lines.upright || lines).join(' '))) {
       items = [partialFlightFromText(lines.upright && lines.upright.length ? lines.upright : lines)];
@@ -6439,6 +6564,8 @@ async function readPdfFiles(files) {
   lastImportSummary = (toAdd.length ? '<span style="color:var(--green);">✓ Added ' + addedParts.join(', ').replace(/, ([^,]*)$/, ' and $1') + ' to the calendar.</span>' : (!unread.length && !held && !already.length ? 'Nothing new found.' : '')) +
     (already.length ? ' Skipped ' + already.length + ' already in the ledger.' : '') +
     (timesAdded ? ' <span style="color:var(--green);">✓ Added times to ' + timesAdded + ' flight' + (timesAdded > 1 ? 's' : '') + ' already in the ledger.</span>' : '') +
+    (aiUsedOn.length ? '<div class="hint" style="margin-top:4px;">Read by the AI reader (personal details removed first): ' + esc(aiUsedOn.join(', ')) + '.</div>' : '') +
+    (aiFailed.length ? '<div style="margin-top:4px; color:var(--amber);">The AI reader couldn\u2019t read ' + esc(aiFailed.join('; ')) + ', so the reader on this device was used instead.</div>' : '') +
     (held ? ' <b>' + held + ' need your check below.</b>' : '') +
     (toAdd.length ? ' <button type="button" class="btn-secondary hc-btn" id="pdfImportUndo">Undo this import</button>' : '') +
     (unread.length ? '<div style="margin-top:8px; color:var(--amber);">' + unread.map((u, k) => {
